@@ -135,15 +135,18 @@ class StudentResponse(BaseModel):
 
 
 class StudentListItem(BaseModel):
-    """Lighter version for list views — fewer fields."""
+    """Lighter version for list views — all fields the frontend needs."""
     id: UUID
     admission_number: str
+    first_name: str
+    last_name: str
     full_name: str
+    guardian_name: str
     guardian_phone: str
     status: str
-    current_class: Optional[str]
+    current_class: Optional[str] = None
+    class_name: Optional[str] = None   # same value, frontend uses this name
     scholarship_percent: float
-
 
 # ── Enrollment ───────────────────────────────────────────────
 class EnrollmentCreate(BaseModel):

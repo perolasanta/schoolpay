@@ -49,6 +49,16 @@ class PlatformLoginResponse(BaseModel):
     access_token: str
     admin_name: str
     admin_email: str
+    admin_role: str
+
+
+def _normalize_platform_role(raw_role: Optional[str]) -> str:
+    role = (raw_role or "").strip().lower()
+    if role in {"platform_admin", "admin", "super_admin", "owner", "platform_owner"}:
+        return "platform_admin"
+    if role in {"platform_support", "support", "support_staff"}:
+        return "platform_support"
+    return "platform_support"
 
 
 @router.post("/auth/login", response_model=PlatformLoginResponse)
@@ -76,7 +86,7 @@ async def platform_login(body: PlatformLoginRequest):
     # Verify this user is in platform_users (not just any Supabase user)
     admin = (
         supabase_admin.table("platform_users")
-        .select("id, full_name, email, is_active")
+        .select("id, full_name, email, role, is_active")
         .eq("email", body.email)
         .eq("is_active", True)
         .maybe_single()
@@ -90,22 +100,25 @@ async def platform_login(body: PlatformLoginRequest):
 
     a = admin.data
 
+    admin_role = _normalize_platform_role(a.get("role"))
+
     # Issue JWT with is_platform_admin=True
     # school_id is set to a placeholder UUID since platform admins
     # don't belong to a school
     token = create_access_token(TokenData(
         user_id=str(a["id"]),
         school_id="00000000-0000-0000-0000-000000000000",
-        role="platform_admin",
+        role=admin_role,
         email=a["email"],
         full_name=a["full_name"],
-        is_platform_admin=True,
+        is_platform_admin=(admin_role == "platform_admin"),
     ))
 
     return PlatformLoginResponse(
         access_token=token,
         admin_name=a["full_name"],
         admin_email=a["email"],
+        admin_role=admin_role,
     )
 
 

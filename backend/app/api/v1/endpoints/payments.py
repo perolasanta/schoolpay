@@ -551,3 +551,42 @@ async def download_receipt_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+@router.get("/recent")
+async def recent_payments(
+    user: CurrentUser = Depends(get_active_user),
+    limit: int = Query(default=8, ge=1, le=50),
+):
+    """
+    Returns the most recent payments for the dashboard activity feed.
+    """
+    db = SchoolDB(str(user.school_id))
+
+    result = (
+        db.select(
+            "payments",
+            "id, amount, payment_method, status, receipt_number, created_at, "
+            "students(first_name, last_name)"
+        )
+        .eq("status", "success")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+
+    payments = []
+    for p in (result.data or []):
+        student = p.get("students") or {}
+        payments.append({
+            "id":             p["id"],
+            "amount":         float(p["amount"]),
+            "payment_method": p["payment_method"],
+            "receipt_number": p.get("receipt_number"),
+            "created_at":     p["created_at"],
+            "student_name":   f"{student.get('first_name', '')} {student.get('last_name', '')}".strip(),
+        })
+
+    return APIResponse(data=payments)
+
+

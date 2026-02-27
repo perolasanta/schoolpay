@@ -63,6 +63,17 @@ def _make_admin_client() -> Client:
 supabase_admin: Client = _make_admin_client()
 
 
+# ── Dedicated query client (never used for auth) ──────────────
+# supabase_admin gets its session poisoned when sign_in_with_password
+# is called on any client sharing the same connection pool.
+# This client is used ONLY for DB queries — never for auth operations.
+def make_query_client() -> Client:
+    return create_client(
+        settings.SUPABASE_URL,
+        settings.SUPABASE_SERVICE_KEY,
+        options=SyncClientOptions(schema="schoolpay")
+    )
+
 # ── School-scoped DB wrapper ──────────────────────────────────
 class SchoolDB:
     """

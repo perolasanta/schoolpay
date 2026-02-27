@@ -1,12 +1,12 @@
 // src/App.jsx
-// Central router. Two zones:
-//   - Public:       /login, /pay/:token
-//   - Protected:    everything else (requires JWT)
+// Central router with role-based route guards.
+// RoleGuard prevents a teacher from navigating to /approvals even via URL bar.
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { AuthProvider, useAuth } from './lib/auth'
 import AppLayout from './components/layout/AppLayout'
+import { can, allowedNav } from './lib/permissions'
 
 import Login     from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -15,13 +15,25 @@ import Invoices  from './pages/Invoices'
 import Payments  from './pages/Payments'
 import Debtors   from './pages/Debtors'
 import Approvals from './pages/Approvals'
+import Users     from './pages/Users'
 import PayPage   from './pages/PayPage'
 
-// Wraps any route that requires login
+// Requires login
 function Protected({ children }) {
   const { user, loading } = useAuth()
   if (loading) return null
   if (!user) return <Navigate to="/login" replace />
+  return <AppLayout>{children}</AppLayout>
+}
+
+// Requires login + specific nav permission
+// routeId must match an id in allowedNav()
+function RoleGuard({ routeId, children }) {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (!user) return <Navigate to="/login" replace />
+  const allowed = allowedNav(user.role)
+  if (!allowed.includes(routeId)) return <Navigate to="/dashboard" replace />
   return <AppLayout>{children}</AppLayout>
 }
 
@@ -34,15 +46,18 @@ export default function App() {
           <Route path="/login"      element={<Login />} />
           <Route path="/pay/:token" element={<PayPage />} />
 
-          {/* Protected */}
+          {/* Protected — all logged-in users */}
           <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
-          <Route path="/students"  element={<Protected><Students /></Protected>} />
-          <Route path="/invoices"  element={<Protected><Invoices /></Protected>} />
-          <Route path="/payments"  element={<Protected><Payments /></Protected>} />
-          <Route path="/debtors"   element={<Protected><Debtors /></Protected>} />
-          <Route path="/approvals" element={<Protected><Approvals /></Protected>} />
 
-          {/* Default redirect */}
+          {/* Role-guarded routes */}
+          <Route path="/students"  element={<RoleGuard routeId="students"><Students /></RoleGuard>} />
+          <Route path="/invoices"  element={<RoleGuard routeId="invoices"><Invoices /></RoleGuard>} />
+          <Route path="/payments"  element={<RoleGuard routeId="payments"><Payments /></RoleGuard>} />
+          <Route path="/debtors"   element={<RoleGuard routeId="debtors"><Debtors /></RoleGuard>} />
+          <Route path="/approvals" element={<RoleGuard routeId="approvals"><Approvals /></RoleGuard>} />
+          <Route path="/users"     element={<RoleGuard routeId="users"><Users /></RoleGuard>} />
+
+          {/* Default */}
           <Route path="/"  element={<Navigate to="/dashboard" replace />} />
           <Route path="*"  element={<Navigate to="/dashboard" replace />} />
         </Routes>
@@ -52,11 +67,9 @@ export default function App() {
         position="top-right"
         toastOptions={{
           style: {
-            background: '#1a2a4a',
-            color: '#f0f4f8',
+            background: '#1a2a4a', color: '#f0f4f8',
             border: '1px solid rgba(255,255,255,0.08)',
-            fontFamily: "'DM Sans', sans-serif",
-            fontSize: '14px',
+            fontFamily: "'DM Sans', sans-serif", fontSize: '14px',
           },
           success: { iconTheme: { primary: '#22c55e', secondary: '#0d1526' } },
           error:   { iconTheme: { primary: '#ef4444', secondary: '#0d1526' } },

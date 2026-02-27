@@ -1,22 +1,28 @@
 // src/components/layout/AppLayout.jsx
-// The main shell: sidebar + topbar + page content.
-// Every authenticated page is wrapped in this.
+// Role-aware sidebar: nav items filter by the logged-in user's role.
+// school_admin sees Users link. bursar/teacher/accountant do not.
 
 import { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard,
-  AlertCircle, Clock, LogOut, Menu, X, ChevronRight
+  AlertCircle, Clock, LogOut, Menu, UserCog,
+  ShieldCheck,
 } from 'lucide-react'
 import { useAuth } from '../../lib/auth'
+import { allowedNav, roleInfo } from '../../lib/permissions'
 
-const NAV = [
-  { to: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/students',   icon: Users,           label: 'Students' },
-  { to: '/invoices',   icon: FileText,        label: 'Invoices' },
-  { to: '/payments',   icon: CreditCard,      label: 'Record Payment' },
-  { to: '/debtors',    icon: AlertCircle,     label: 'Debtors' },
-  { to: '/approvals',  icon: Clock,           label: 'Approvals' },
+// All possible nav items — filtered by allowedNav(role)
+const ALL_NAV = [
+  { id: 'dashboard',  to: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard' },
+  { id: 'students',   to: '/students',   icon: Users,           label: 'Students' },
+  { id: 'invoices',   to: '/invoices',   icon: FileText,        label: 'Invoices' },
+  { id: 'payments',   to: '/payments',   icon: CreditCard,      label: 'Record Payment' },
+  { id: 'debtors',    to: '/debtors',    icon: AlertCircle,     label: 'Debtors' },
+  { id: 'approvals',  to: '/approvals',  icon: Clock,           label: 'Approvals',
+    badge: true },
+  { id: 'users',      to: '/users',      icon: UserCog,         label: 'Manage Staff',
+    adminOnly: true },
 ]
 
 export default function AppLayout({ children }) {
@@ -26,10 +32,14 @@ export default function AppLayout({ children }) {
 
   const handleLogout = () => { logout(); navigate('/login') }
 
+  const allowed = allowedNav(user?.role)
+  const visibleNav = ALL_NAV.filter(item => allowed.includes(item.id))
+  const info = roleInfo(user?.role)
+
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
 
-      {/* ── Mobile overlay ── */}
+      {/* Mobile overlay */}
       {open && (
         <div
           onClick={() => setOpen(false)}
@@ -37,7 +47,7 @@ export default function AppLayout({ children }) {
         />
       )}
 
-      {/* ── Sidebar ── */}
+      {/* Sidebar */}
       <aside style={{
         width: 240,
         background: 'var(--navy-900)',
@@ -46,17 +56,9 @@ export default function AppLayout({ children }) {
         flexDirection: 'column',
         flexShrink: 0,
         zIndex: 40,
-        transition: 'transform 0.25s',
-        // Mobile: slide in/out
-        position: window.innerWidth < 768 ? 'fixed' : 'relative',
-        inset: window.innerWidth < 768 ? '0 auto 0 0' : 'auto',
-        transform: window.innerWidth < 768 && !open ? 'translateX(-100%)' : 'translateX(0)',
       }}>
         {/* Logo */}
-        <div style={{
-          padding: '24px 20px 20px',
-          borderBottom: '1px solid var(--border)',
-        }}>
+        <div style={{ padding: '24px 20px 20px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{
               width: 34, height: 34,
@@ -67,23 +69,35 @@ export default function AppLayout({ children }) {
               color: 'var(--navy-950)',
             }}>S</div>
             <div>
-              <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>SchoolPay</div>
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 600 }}>SchoolPay</div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: -2 }}>Fee Management</div>
             </div>
           </div>
         </div>
 
-        {/* School name */}
+        {/* School name + role badge */}
         <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>School</div>
-          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--gold-400)', lineHeight: 1.3 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--gold-400)', lineHeight: 1.3, marginBottom: 8 }}>
             {user?.school_name || 'Loading...'}
+          </div>
+          {/* Role badge */}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            background: `${info.color}15`,
+            border: `1px solid ${info.color}30`,
+            color: info.color,
+            borderRadius: 20, padding: '2px 8px',
+            fontSize: 11, fontWeight: 500,
+          }}>
+            <ShieldCheck size={10} />
+            {info.label}
           </div>
         </div>
 
         {/* Navigation */}
         <nav style={{ flex: 1, padding: '12px 10px', overflowY: 'auto' }}>
-          {NAV.map(({ to, icon: Icon, label }) => (
+          {visibleNav.map(({ to, icon: Icon, label, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -106,15 +120,13 @@ export default function AppLayout({ children }) {
             >
               <Icon size={16} />
               {label}
-              {label === 'Approvals' && (
+              {badge && (
                 <span style={{
                   marginLeft: 'auto',
                   background: 'var(--danger)',
                   color: 'white',
-                  fontSize: 10,
-                  fontWeight: 700,
-                  borderRadius: 10,
-                  padding: '1px 6px',
+                  fontSize: 10, fontWeight: 700,
+                  borderRadius: 10, padding: '1px 6px',
                 }}>!</span>
               )}
             </NavLink>
@@ -125,7 +137,7 @@ export default function AppLayout({ children }) {
         <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 500 }}>{user?.full_name}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'capitalize' }}>{user?.role?.replace('_', ' ')}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{user?.email}</div>
           </div>
           <button
             onClick={handleLogout}
@@ -133,8 +145,7 @@ export default function AppLayout({ children }) {
               display: 'flex', alignItems: 'center', gap: 8,
               background: 'none', border: 'none',
               color: 'var(--text-muted)', cursor: 'pointer',
-              fontSize: 13, padding: 0,
-              transition: 'color 0.15s',
+              fontSize: 13, padding: 0, transition: 'color 0.15s',
             }}
             onMouseEnter={e => e.currentTarget.style.color = 'var(--danger)'}
             onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
@@ -144,31 +155,18 @@ export default function AppLayout({ children }) {
         </div>
       </aside>
 
-      {/* ── Main area ── */}
+      {/* Main area */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
         {/* Topbar */}
         <header style={{
           height: 60,
           background: 'var(--navy-900)',
           borderBottom: '1px solid var(--border)',
           display: 'flex', alignItems: 'center',
-          padding: '0 24px',
-          gap: 16,
-          flexShrink: 0,
+          padding: '0 24px', gap: 16, flexShrink: 0,
         }}>
-          <button
-            onClick={() => setOpen(true)}
-            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'none' }}
-            className="mobile-menu-btn"
-          >
-            <Menu size={20} />
-          </button>
           <div style={{ flex: 1 }} />
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            fontSize: 13, color: 'var(--text-secondary)',
-          }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
             <div style={{
               width: 30, height: 30,
               background: 'linear-gradient(135deg, var(--navy-600), var(--navy-700))',
