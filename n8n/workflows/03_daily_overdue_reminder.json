@@ -1,0 +1,343 @@
+{
+  "name": "SchoolPay — Daily Overdue Reminder (Scheduled)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Daily 8AM Trigger (Mon-Fri)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "notes": "Runs Monday to Friday at 8:00 AM Nigeria time (WAT = UTC+1). Weekends are excluded — schools don't want parents getting SMS on weekends. Cron: 0 8 * * 1-5"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SCHOOLPAY_API_URL }}/api/v1/internal/overdue-invoices",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $env.SCHOOLPAY_INTERNAL_KEY }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "days_overdue_min",
+              "value": "3"
+            },
+            {
+              "name": "days_overdue_max",
+              "value": "60"
+            },
+            {
+              "name": "status",
+              "value": "unpaid,partial"
+            },
+            {
+              "name": "subscription_active",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-overdue",
+      "name": "Fetch All Overdue Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [480, 300],
+      "notes": "Gets overdue invoices across ALL active schools. Only schools with active subscriptions are included. 3-day minimum prevents spamming parents immediately after due date. 60-day maximum avoids hassling very old debts (handle manually)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "has-overdue",
+              "leftValue": "={{ $json.data.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-overdue",
+      "name": "Any Overdue Invoices?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "notes": "If no overdue invoices exist (great news!), the workflow exits cleanly. No error, no logs needed."
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "split-overdue",
+      "name": "Split Into Individual Records",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [960, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build overdue reminder message with urgency scaling\n// The longer overdue, the firmer the tone\n\nconst inv = $json; // current invoice record\n\n// Normalise phone\nlet phone = inv.guardian_phone.toString().replace(/\\D/g, '');\nif (phone.startsWith('0')) phone = '234' + phone.slice(1);\n\nconst formatAmount = (n) => '\\u20A6' + Number(n).toLocaleString('en-NG', { minimumFractionDigits: 2 });\n\nconst firstName   = inv.student_name.split(' ')[0];\nconst balance     = inv.outstanding_balance;\nconst daysOverdue = inv.days_overdue;\nconst payLink     = `${$env.PAYMENT_PAGE_URL}/pay/${inv.payment_token}`;\nconst schoolName  = inv.school_name;\n\n// URGENCY TIERS based on days overdue\n// Gentle → Firm → Urgent\nlet smsText, whatsappText, urgencyLevel;\n\nif (daysOverdue <= 7) {\n  urgencyLevel = 'gentle';\n  smsText = `Dear ${firstName}, a friendly reminder that ${inv.student_name} has an outstanding fee of ${formatAmount(balance)} at ${schoolName}. Pay: ${payLink} - SchoolPay`;\n  whatsappText = `📚 *Fee Reminder*\\n\\nDear ${firstName},\\n\\nThis is a friendly reminder that *${inv.student_name}* has an outstanding fee balance of *${formatAmount(balance)}* at *${schoolName}*.\\n\\n👉 Pay securely: ${payLink}\\n\\n_No login required._`;\n\n} else if (daysOverdue <= 21) {\n  urgencyLevel = 'firm';\n  smsText = `Dear ${firstName}, fees for ${inv.student_name} at ${schoolName} remain unpaid (${formatAmount(balance)}, ${daysOverdue} days overdue). Please pay to avoid disruption: ${payLink} - SchoolPay`;\n  whatsappText = `⚠️ *Fee Payment Required*\\n\\nDear ${firstName},\\n\\nFees for *${inv.student_name}* at *${schoolName}* remain outstanding.\\n\\n💰 Balance: *${formatAmount(balance)}*\\n📅 Overdue by: *${daysOverdue} days*\\n\\nPlease settle this promptly to avoid disruption to your ward's schooling.\\n\\n👉 Pay now: ${payLink}`;\n\n} else {\n  urgencyLevel = 'urgent';\n  smsText = `URGENT: ${inv.student_name}'s fees at ${schoolName} (${formatAmount(balance)}) are ${daysOverdue} days overdue. Immediate payment required: ${payLink} - SchoolPay`;\n  whatsappText = `🚨 *URGENT: Fee Payment Required*\\n\\nDear ${firstName},\\n\\nThe outstanding fees for *${inv.student_name}* at *${schoolName}* are now *${daysOverdue} days overdue*.\\n\\n💰 Amount Due: *${formatAmount(balance)}*\\n\\nImmediate payment is required. Please contact the school if you need to discuss a payment plan.\\n\\n👉 Pay now: ${payLink}`;\n}\n\nreturn [{\n  json: {\n    phone,\n    smsText,\n    whatsappText,\n    urgencyLevel,\n    daysOverdue,\n    student_id: inv.student_id,\n    school_id: inv.school_id,\n    invoice_id: inv.invoice_id,\n    balance,\n  }\n}];\n"
+      },
+      "id": "build-overdue-msg",
+      "name": "Build Overdue Message (With Urgency)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 200],
+      "notes": "Three urgency tiers: Gentle (1-7 days), Firm (8-21 days), Urgent (22+ days). Message tone escalates automatically. This is deliberate — schools want escalating pressure without calling parents manually."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TERMII_BASE_URL }}/sms/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.phone }}"
+            },
+            {
+              "name": "from",
+              "value": "={{ $env.TERMII_SENDER_ID }}"
+            },
+            {
+              "name": "sms",
+              "value": "={{ $json.smsText }}"
+            },
+            {
+              "name": "type",
+              "value": "plain"
+            },
+            {
+              "name": "channel",
+              "value": "generic"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.TERMII_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 10,
+              "batchInterval": 1500
+            }
+          }
+        }
+      },
+      "id": "send-overdue-sms",
+      "name": "Send Overdue SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 100],
+      "continueOnFail": true,
+      "notes": "Batched at 10/second to stay within Termii rate limits. A platform with 50 schools × 100 debtors each = 5,000 SMS — completes in ~8 minutes."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TERMII_BASE_URL }}/sms/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.phone }}"
+            },
+            {
+              "name": "from",
+              "value": "={{ $env.TERMII_SENDER_ID }}"
+            },
+            {
+              "name": "sms",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.whatsappText }}"
+            },
+            {
+              "name": "type",
+              "value": "plain"
+            },
+            {
+              "name": "channel",
+              "value": "whatsapp"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.TERMII_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 10,
+              "batchInterval": 1500
+            }
+          }
+        }
+      },
+      "id": "send-overdue-whatsapp",
+      "name": "Send Overdue WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SCHOOLPAY_API_URL }}/api/v1/internal/notification-log",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $env.SCHOOLPAY_INTERNAL_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "school_id",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.school_id }}"
+            },
+            {
+              "name": "student_id",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.student_id }}"
+            },
+            {
+              "name": "phone",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.phone }}"
+            },
+            {
+              "name": "notification_type",
+              "value": "overdue_reminder_auto"
+            },
+            {
+              "name": "urgency_level",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.urgencyLevel }}"
+            },
+            {
+              "name": "days_overdue",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.daysOverdue }}"
+            },
+            {
+              "name": "sms_status",
+              "value": "={{ $('Send Overdue SMS').item.json.code || 'unknown' }}"
+            },
+            {
+              "name": "whatsapp_status",
+              "value": "={{ $('Send Overdue WhatsApp').item.json.code || 'unknown' }}"
+            },
+            {
+              "name": "message_preview",
+              "value": "={{ $('Build Overdue Message (With Urgency)').item.json.smsText.slice(0, 100) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-overdue-notification",
+      "name": "Log Overdue Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1680, 200],
+      "continueOnFail": true,
+      "notes": "Every automated reminder is logged. School admins can see exactly when reminders went out and whether they were delivered. Useful for parent disputes ('I never got a reminder')."
+    },
+    {
+      "parameters": {
+        "jsCode": "// No overdue invoices found — log success and exit\nconsole.log('[SchoolPay] Daily overdue check: no overdue invoices found. All caught up!');\nreturn [{ json: { status: 'no_overdue', timestamp: new Date().toISOString() } }];\n"
+      },
+      "id": "no-overdue-log",
+      "name": "Log No Overdue (Exit)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 440],
+      "notes": "Clean exit when no overdue invoices exist."
+    }
+  ],
+  "connections": {
+    "Daily 8AM Trigger (Mon-Fri)": {
+      "main": [
+        [{ "node": "Fetch All Overdue Invoices", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch All Overdue Invoices": {
+      "main": [
+        [{ "node": "Any Overdue Invoices?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any Overdue Invoices?": {
+      "main": [
+        [{ "node": "Split Into Individual Records", "type": "main", "index": 0 }],
+        [{ "node": "Log No Overdue (Exit)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Split Into Individual Records": {
+      "main": [
+        [{ "node": "Build Overdue Message (With Urgency)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Overdue Message (With Urgency)": {
+      "main": [
+        [
+          { "node": "Send Overdue SMS", "type": "main", "index": 0 },
+          { "node": "Send Overdue WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send Overdue SMS": {
+      "main": [
+        [{ "node": "Log Overdue Notification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Overdue WhatsApp": {
+      "main": [
+        [{ "node": "Log Overdue Notification", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "SchoolPay — Error Handler"
+  },
+  "staticData": null,
+  "tags": ["schoolpay", "scheduled", "overdue"],
+  "pinData": {}
+}

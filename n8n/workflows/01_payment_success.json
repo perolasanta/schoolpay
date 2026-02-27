@@ -1,0 +1,311 @@
+{
+  "name": "SchoolPay — Payment Success Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "payment-success",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Payment Success Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "notes": "FastAPI posts here after EVERY successful payment (cash, bank transfer approved, Paystack webhook). Payload: payment_id, school_id, student_id, amount, receipt_number, payment_method"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SCHOOLPAY_API_URL }}/api/v1/internal/student-contact/{{ $json.body.student_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $env.SCHOOLPAY_INTERNAL_KEY }}"
+            },
+            {
+              "name": "X-School-Id",
+              "value": "={{ $json.body.school_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "fetch-student",
+      "name": "Fetch Student & School Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [480, 300],
+      "notes": "Fetches: student full name, guardian_phone, school name, outstanding balance. One call gives us everything needed for the SMS message."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "phone-exists",
+              "leftValue": "={{ $json.data.guardian_phone }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-phone",
+      "name": "Has Guardian Phone?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "notes": "Safety check — if guardian_phone is missing we cannot send SMS. Log and exit cleanly."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the SMS message and format the phone number\n// Runs when guardian_phone exists\n\nconst webhookData = $('Payment Success Webhook').item.json.body;\nconst studentData = $('Fetch Student & School Details').item.json.data;\n\nconst amount       = webhookData.amount;\nconst receipt      = webhookData.receipt_number;\nconst method       = webhookData.payment_method;\nconst studentName  = studentData.student_name;  // e.g. \"Chukwuemeka Obi\"\nconst firstName    = studentName.split(' ')[0];   // \"Chukwuemeka\"\nconst schoolName   = studentData.school_name;     // e.g. \"Greenfield Academy\"\nconst balance      = studentData.outstanding_balance;\nconst rawPhone     = studentData.guardian_phone;  // e.g. 08012345678\n\n// Normalise phone to international format for Termii\n// Nigerian numbers: 080... → 2348...\nlet phone = rawPhone.toString().replace(/\\D/g, ''); // strip non-digits\nif (phone.startsWith('0')) {\n  phone = '234' + phone.slice(1);\n} else if (phone.startsWith('+')) {\n  phone = phone.slice(1);\n}\n// phone is now: 2348012345678\n\n// Format amount with Nigerian comma formatting\nconst formatAmount = (n) => '\\u20A6' + Number(n).toLocaleString('en-NG', { minimumFractionDigits: 2 });\n\n// Payment method label (human-friendly)\nconst methodLabel = {\n  cash: 'Cash',\n  bank_transfer: 'Bank Transfer',\n  paystack: 'Online Payment'\n}[method] || method;\n\n// Build the SMS text\n// Keep under 160 chars where possible for single-SMS delivery\nconst balanceText = balance > 0\n  ? `Outstanding balance: ${formatAmount(balance)}.`\n  : 'Account is FULLY PAID. Thank you!';\n\nconst smsText = `Dear ${firstName}, payment of ${formatAmount(amount)} received via ${methodLabel} for ${studentName} at ${schoolName}. Receipt: ${receipt}. ${balanceText} - SchoolPay`;\n\n// WhatsApp message can be richer (supports longer text)\nconst whatsappText = `✅ *Payment Confirmed*\\n\\nDear ${firstName},\\n\\nWe have received a payment for *${studentName}* at *${schoolName}*.\\n\\n💰 Amount Paid: *${formatAmount(amount)}*\\n🧾 Receipt No: *${receipt}*\\n💳 Method: ${methodLabel}\\n\\n${balance > 0 ? `📋 Outstanding Balance: *${formatAmount(balance)}*` : '🎉 Account fully paid for this term!'}\\n\\n_This is an automated receipt from SchoolPay._`;\n\nreturn [{\n  json: {\n    phone,\n    rawPhone,\n    smsText,\n    whatsappText,\n    studentName,\n    schoolName,\n    amount,\n    receipt,\n    method,\n    balance,\n    school_id: webhookData.school_id,\n    student_id: webhookData.student_id,\n    payment_id: webhookData.payment_id,\n  }\n}];\n"
+      },
+      "id": "build-message",
+      "name": "Build SMS & WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 220],
+      "notes": "Normalises Nigerian phone number to international format (2348...). Builds two messages: short SMS (<160 chars) and rich WhatsApp version."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TERMII_BASE_URL }}/sms/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.phone }}"
+            },
+            {
+              "name": "from",
+              "value": "={{ $env.TERMII_SENDER_ID }}"
+            },
+            {
+              "name": "sms",
+              "value": "={{ $json.smsText }}"
+            },
+            {
+              "name": "type",
+              "value": "plain"
+            },
+            {
+              "name": "channel",
+              "value": "generic"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.TERMII_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "send-sms",
+      "name": "Send SMS via Termii",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 140],
+      "continueOnFail": true,
+      "notes": "Sends SMS via Termii generic channel. continueOnFail=true means WhatsApp still sends even if SMS fails. Nigerian DND numbers may reject generic channel — that's acceptable."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TERMII_BASE_URL }}/sms/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $('Build SMS & WhatsApp Message').item.json.phone }}"
+            },
+            {
+              "name": "from",
+              "value": "={{ $env.TERMII_SENDER_ID }}"
+            },
+            {
+              "name": "sms",
+              "value": "={{ $('Build SMS & WhatsApp Message').item.json.whatsappText }}"
+            },
+            {
+              "name": "type",
+              "value": "plain"
+            },
+            {
+              "name": "channel",
+              "value": "whatsapp"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.TERMII_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "send-whatsapp",
+      "name": "Send WhatsApp via Termii",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 340],
+      "continueOnFail": true,
+      "notes": "Sends same receipt via WhatsApp channel. Parents who ignore SMS often respond to WhatsApp. Both run in parallel — either can fail without blocking the other."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SCHOOLPAY_API_URL }}/api/v1/internal/notification-log",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $env.SCHOOLPAY_INTERNAL_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "school_id",
+              "value": "={{ $('Build SMS & WhatsApp Message').item.json.school_id }}"
+            },
+            {
+              "name": "student_id",
+              "value": "={{ $('Build SMS & WhatsApp Message').item.json.student_id }}"
+            },
+            {
+              "name": "payment_id",
+              "value": "={{ $('Build SMS & WhatsApp Message').item.json.payment_id }}"
+            },
+            {
+              "name": "phone",
+              "value": "={{ $('Build SMS & WhatsApp Message').item.json.phone }}"
+            },
+            {
+              "name": "sms_status",
+              "value": "={{ $('Send SMS via Termii').item.json.code || 'unknown' }}"
+            },
+            {
+              "name": "whatsapp_status",
+              "value": "={{ $('Send WhatsApp via Termii').item.json.code || 'unknown' }}"
+            },
+            {
+              "name": "notification_type",
+              "value": "payment_receipt"
+            },
+            {
+              "name": "message_preview",
+              "value": "={{ $('Build SMS & WhatsApp Message').item.json.smsText.slice(0, 100) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-notification",
+      "name": "Log Notification to DB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 240],
+      "continueOnFail": true,
+      "notes": "Writes to notification_logs table via FastAPI internal endpoint. Records SMS and WhatsApp delivery status for debugging. Schools can see this in their activity log."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"ok\", \"receipt\": \"{{ $('Build SMS & WhatsApp Message').item.json.receipt }}\" }"
+      },
+      "id": "respond-ok",
+      "name": "Respond to FastAPI",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1680, 240],
+      "notes": "FastAPI waits max 5 seconds for this response. If n8n doesn't respond in time, FastAPI logs a warning and continues — payment is never blocked."
+    },
+    {
+      "parameters": {
+        "jsCode": "// No phone number found — log it and exit cleanly\nconst webhookData = $('Payment Success Webhook').item.json.body;\nconsole.log(`[SchoolPay] No guardian_phone for student ${webhookData.student_id} — skipping notification`);\nreturn [{ json: { skipped: true, reason: 'no_guardian_phone', student_id: webhookData.student_id } }];\n"
+      },
+      "id": "log-no-phone",
+      "name": "Log Missing Phone (Skip)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 440],
+      "notes": "If student has no guardian_phone, we skip silently. This is not an error — some schools add phone numbers later."
+    }
+  ],
+  "connections": {
+    "Payment Success Webhook": {
+      "main": [
+        [{ "node": "Fetch Student & School Details", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Student & School Details": {
+      "main": [
+        [{ "node": "Has Guardian Phone?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has Guardian Phone?": {
+      "main": [
+        [{ "node": "Build SMS & WhatsApp Message", "type": "main", "index": 0 }],
+        [{ "node": "Log Missing Phone (Skip)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build SMS & WhatsApp Message": {
+      "main": [
+        [
+          { "node": "Send SMS via Termii", "type": "main", "index": 0 },
+          { "node": "Send WhatsApp via Termii", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send SMS via Termii": {
+      "main": [
+        [{ "node": "Log Notification to DB", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send WhatsApp via Termii": {
+      "main": [
+        [{ "node": "Log Notification to DB", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Notification to DB": {
+      "main": [
+        [{ "node": "Respond to FastAPI", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "SchoolPay — Error Handler"
+  },
+  "staticData": null,
+  "tags": ["schoolpay", "payments", "sms"],
+  "pinData": {}
+}

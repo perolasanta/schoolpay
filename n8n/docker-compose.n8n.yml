@@ -1,0 +1,78 @@
+# ============================================================
+# n8n Docker Compose configuration (Session 8 integration snippet)
+# 
+# Add this to your main docker-compose.yml in Session 8.
+# The `api` service must be defined before n8n starts —
+# use depends_on to enforce the order.
+#
+# Full docker-compose.yml is built in Session 8.
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ── n8n Automation Engine ─────────────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: schoolpay_n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"      # Bind to localhost ONLY — NGINX proxies externally
+                                    # Never expose 5678 directly to the internet
+    environment:
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - GENERIC_TIMEZONE=Africa/Lagos
+      - N8N_WEBHOOK_BASE_URL=${N8N_WEBHOOK_BASE_URL}
+      - N8N_USER_FOLDER=/home/node/.n8n
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=none
+      - EXECUTIONS_DATA_MAX_AGE=168
+      # SchoolPay custom vars — accessible in workflows as $env.VAR
+      - SCHOOLPAY_API_URL=http://api:8000
+      - SCHOOLPAY_INTERNAL_KEY=${SCHOOLPAY_INTERNAL_KEY}
+      - TERMII_API_KEY=${TERMII_API_KEY}
+      - TERMII_BASE_URL=https://api.ng.termii.com/api
+      - TERMII_SENDER_ID=${TERMII_SENDER_ID:-SchoolPay}
+      - PAYMENT_PAGE_URL=${PAYMENT_PAGE_URL}
+    volumes:
+      - n8n_data:/home/node/.n8n           # Persists workflows and credentials
+      - ./n8n/workflows:/workflows:ro       # Read-only mount for importing workflows
+    networks:
+      - schoolpay_network
+    depends_on:
+      api:
+        condition: service_healthy          # Wait for FastAPI /health to return 200
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── FastAPI Backend (reference — defined fully in Session 8) ──
+  api:
+    build: ./backend
+    container_name: schoolpay_api
+    restart: unless-stopped
+    # ... (full config in Session 8)
+    networks:
+      - schoolpay_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  n8n_data:
+    driver: local
+
+networks:
+  schoolpay_network:
+    driver: bridge

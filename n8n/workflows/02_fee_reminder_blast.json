@@ -1,0 +1,330 @@
+{
+  "name": "SchoolPay — Bulk Debtor SMS Blast",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fee-reminder",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Fee Reminder Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "notes": "FastAPI posts here when a bursar clicks 'Send Bulk SMS Blast' in the dashboard. Payload: school_id, term_id, message_template (optional custom message)"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SCHOOLPAY_API_URL }}/api/v1/internal/debtors",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $env.SCHOOLPAY_INTERNAL_KEY }}"
+            },
+            {
+              "name": "X-School-Id",
+              "value": "={{ $json.body.school_id }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "term_id",
+              "value": "={{ $json.body.term_id }}"
+            },
+            {
+              "name": "status",
+              "value": "unpaid,partial"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-debtors",
+      "name": "Fetch All Debtors",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [480, 300],
+      "notes": "Calls the v_student_fee_status view endpoint. Returns list of students with outstanding balances for this term. Includes: student_name, guardian_phone, balance, invoice_id, payment_token."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "has-debtors",
+              "leftValue": "={{ $json.data.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-debtors",
+      "name": "Any Debtors?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "notes": "If no debtors found (all paid up!), respond immediately with success and skip the SMS loop."
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "split-debtors",
+      "name": "Split Into Individual Debtors",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [960, 200],
+      "notes": "Converts the array of debtors into individual items so each one gets processed separately. n8n will loop through each debtor automatically."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build personalised SMS for each debtor\n// Runs once per student in the loop\n\nconst debtor = $json; // current student in loop\nconst webhookBody = $('Fee Reminder Webhook').first().json.body;\n\n// Normalise phone to international format\nlet phone = debtor.guardian_phone.toString().replace(/\\D/g, '');\nif (phone.startsWith('0')) {\n  phone = '234' + phone.slice(1);\n}\n\n// Amount formatting\nconst formatAmount = (n) => '\\u20A6' + Number(n).toLocaleString('en-NG', { minimumFractionDigits: 2 });\n\nconst firstName = debtor.student_name.split(' ')[0];\nconst balance   = debtor.outstanding_balance;\nconst payLink   = `${$env.PAYMENT_PAGE_URL}/pay/${debtor.payment_token}`;\n\n// Use custom message template if school provided one\n// Placeholders: {name}, {balance}, {link}\nlet smsText;\nif (webhookBody.message_template) {\n  smsText = webhookBody.message_template\n    .replace('{name}', firstName)\n    .replace('{balance}', formatAmount(balance))\n    .replace('{link}', payLink)\n    .replace('{student}', debtor.student_name);\n} else {\n  // Default message\n  smsText = `Dear ${firstName}, your ward ${debtor.student_name} has an outstanding fee balance of ${formatAmount(balance)}. Pay now: ${payLink} - SchoolPay`;\n}\n\n// WhatsApp version\nconst whatsappText = `📚 *Fee Payment Reminder*\\n\\nDear ${firstName},\\n\\nYour ward *${debtor.student_name}* has an outstanding balance of *${formatAmount(balance)}* for this term.\\n\\n👉 Pay securely here:\\n${payLink}\\n\\n_No login required. Payments are processed instantly._\\n\\n_- SchoolPay_`;\n\nreturn [{\n  json: {\n    phone,\n    smsText,\n    whatsappText,\n    student_id: debtor.student_id,\n    school_id: webhookBody.school_id,\n    invoice_id: debtor.invoice_id,\n    balance,\n    studentName: debtor.student_name,\n  }\n}];\n"
+      },
+      "id": "build-reminder",
+      "name": "Build Reminder Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 200],
+      "notes": "Supports custom message templates from the dashboard. Schools can write their own message with placeholders like {name}, {balance}, {link}. Falls back to default if none provided."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TERMII_BASE_URL }}/sms/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $json.phone }}"
+            },
+            {
+              "name": "from",
+              "value": "={{ $env.TERMII_SENDER_ID }}"
+            },
+            {
+              "name": "sms",
+              "value": "={{ $json.smsText }}"
+            },
+            {
+              "name": "type",
+              "value": "plain"
+            },
+            {
+              "name": "channel",
+              "value": "generic"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.TERMII_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 10,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "send-blast-sms",
+      "name": "Send Bulk SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 100],
+      "continueOnFail": true,
+      "notes": "Sends in batches of 10 with 1 second delay between batches. This prevents Termii rate limiting. A school with 200 debtors completes in ~20 seconds."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TERMII_BASE_URL }}/sms/send",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{ $('Build Reminder Message').item.json.phone }}"
+            },
+            {
+              "name": "from",
+              "value": "={{ $env.TERMII_SENDER_ID }}"
+            },
+            {
+              "name": "sms",
+              "value": "={{ $('Build Reminder Message').item.json.whatsappText }}"
+            },
+            {
+              "name": "type",
+              "value": "plain"
+            },
+            {
+              "name": "channel",
+              "value": "whatsapp"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.TERMII_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "batching": {
+            "batch": {
+              "batchSize": 10,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "send-blast-whatsapp",
+      "name": "Send Bulk WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 300],
+      "continueOnFail": true,
+      "notes": "WhatsApp blast runs in parallel with SMS blast. Both batched to avoid rate limits."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SCHOOLPAY_API_URL }}/api/v1/internal/notification-log",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $env.SCHOOLPAY_INTERNAL_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "school_id",
+              "value": "={{ $('Build Reminder Message').item.json.school_id }}"
+            },
+            {
+              "name": "student_id",
+              "value": "={{ $('Build Reminder Message').item.json.student_id }}"
+            },
+            {
+              "name": "phone",
+              "value": "={{ $('Build Reminder Message').item.json.phone }}"
+            },
+            {
+              "name": "notification_type",
+              "value": "fee_reminder_blast"
+            },
+            {
+              "name": "sms_status",
+              "value": "={{ $('Send Bulk SMS').item.json.code || 'unknown' }}"
+            },
+            {
+              "name": "whatsapp_status",
+              "value": "={{ $('Send Bulk WhatsApp').item.json.code || 'unknown' }}"
+            },
+            {
+              "name": "message_preview",
+              "value": "={{ $('Build Reminder Message').item.json.smsText.slice(0, 100) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-blast",
+      "name": "Log Each Blast Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1680, 200],
+      "continueOnFail": true,
+      "notes": "Logs each notification sent during the blast. Bursars can see the full send history in the notification_logs table — useful for proving reminders were sent."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"ok\", \"message\": \"Bulk SMS blast triggered successfully\" }"
+      },
+      "id": "respond-ok",
+      "name": "Respond to FastAPI",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [720, 460],
+      "notes": "FastAPI gets immediate OK response. The actual SMS sending continues asynchronously in the background. This prevents FastAPI from timing out on large schools."
+    }
+  ],
+  "connections": {
+    "Fee Reminder Webhook": {
+      "main": [
+        [{ "node": "Fetch All Debtors", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch All Debtors": {
+      "main": [
+        [{ "node": "Any Debtors?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Any Debtors?": {
+      "main": [
+        [{ "node": "Split Into Individual Debtors", "type": "main", "index": 0 }],
+        [{ "node": "Respond to FastAPI", "type": "main", "index": 0 }]
+      ]
+    },
+    "Split Into Individual Debtors": {
+      "main": [
+        [{ "node": "Build Reminder Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Reminder Message": {
+      "main": [
+        [
+          { "node": "Send Bulk SMS", "type": "main", "index": 0 },
+          { "node": "Send Bulk WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send Bulk SMS": {
+      "main": [
+        [{ "node": "Log Each Blast Notification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Bulk WhatsApp": {
+      "main": [
+        [{ "node": "Log Each Blast Notification", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "SchoolPay — Error Handler"
+  },
+  "staticData": null,
+  "tags": ["schoolpay", "sms", "blast"],
+  "pinData": {}
+}
