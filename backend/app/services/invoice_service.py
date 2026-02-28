@@ -267,7 +267,7 @@ async def list_invoices(
 ) -> tuple[list, int]:
     db = SchoolDB(school_id)
 
-    # Use the pre-built view that joins students + class + invoice status
+    # Fetch all matching rows from the view (paginate in Python for accurate count)
     query = (
         db.raw()
         .from_("v_student_fee_status")
@@ -276,7 +276,11 @@ async def list_invoices(
         .eq("term_id", term_id)
     )
     if status_filter:
-        query = query.eq("payment_status", status_filter)
+        statuses = [s.strip() for s in str(status_filter).split(",") if s.strip()]
+        if len(statuses) == 1:
+            query = query.eq("payment_status", statuses[0])
+        elif statuses:
+            query = query.in_("payment_status", statuses)
     if class_id:
         query = query.eq("class_id", class_id)
     if params.search:
@@ -286,10 +290,62 @@ async def list_invoices(
     result = (
         query
         .order("last_name", desc=False)
-        .range(params.offset, params.offset + params.page_size - 1)
         .execute()
     )
-    return result.data or [], result.count or 0
+    all_rows = result.data or []
+    total = len(all_rows)
+
+    # Paginate in Python
+    paginated = all_rows[params.offset: params.offset + params.page_size]
+
+    # ── Normalise field names for the frontend ──────────────────
+    # The view uses 'payment_status' and 'invoice_id' but the frontend
+    # expects 'status' and 'id'. We map them here so the frontend
+    # never needs to know about the view's internal naming.
+    # ── Fetch latest payment IDs for the receipt PDF link ─────
+    # Build a map of invoice_id → latest successful payment id
+    invoice_ids = [row.get("invoice_id") for row in paginated if row.get("invoice_id")]
+    payment_map: dict = {}
+    if invoice_ids:
+        pay_result = (
+            db.raw()
+            .from_("payments")
+            .select("id, invoice_id, created_at")
+            .eq("school_id", school_id)
+            .eq("status", "success")
+            .in_("invoice_id", invoice_ids)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        for p in (pay_result.data or []):
+            inv_id = p["invoice_id"]
+            if inv_id not in payment_map:   # first = most recent (desc order)
+                payment_map[inv_id] = p["id"]
+
+    items = []
+    for row in paginated:
+        invoice_id = row.get("invoice_id")
+        items.append({
+            "id":               invoice_id,
+            "student_id":       row.get("student_id"),
+            "student_name":     row.get("full_name"),
+            "first_name":       row.get("first_name"),
+            "last_name":        row.get("last_name"),
+            "admission_number": row.get("admission_number"),
+            "guardian_phone":   row.get("guardian_phone"),
+            "class_name":       row.get("class_name"),
+            "arm":              row.get("arm"),
+            "total_amount":     float(row.get("total_amount") or 0),
+            "amount_paid":      float(row.get("amount_paid") or 0),
+            "balance":          float(row.get("balance") or 0),
+            "status":           row.get("payment_status"),
+            "due_date":         row.get("due_date"),
+            "is_overdue":       row.get("is_overdue"),
+            "payment_token":    row.get("payment_token"),
+            "latest_payment_id": payment_map.get(invoice_id),
+        })
+
+    return items, total
 
 
 # ── Internal helpers ─────────────────────────────────────────

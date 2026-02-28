@@ -7,7 +7,8 @@ const normalizeRole = (role) => {
   const r = String(role || '').toLowerCase().trim()
   if (['platform_admin', 'admin', 'super_admin', 'owner', 'platform_owner'].includes(r)) return 'platform_admin'
   if (['platform_support', 'support', 'support_staff'].includes(r)) return 'platform_support'
-  return 'platform_admin'
+  // Least-privilege default for unknown/legacy values.
+  return 'platform_support'
 }
 
 export function AuthProvider({ children }) {
@@ -36,13 +37,15 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const res = await api.post('/platform/auth/login', { email, password })
-    const { access_token, admin_name, admin_email, admin_role } = res.data
+    const { access_token, refresh_token, admin_name, admin_email, admin_role } = res.data
     const userData = {
       full_name: admin_name,
       email: admin_email,
       role: normalizeRole(admin_role),
     }
     localStorage.setItem('sp_admin_token', access_token)
+    // PRIORITY-0: Persist platform refresh token for silent renewal.
+    if (refresh_token) localStorage.setItem('sp_admin_refresh_token', refresh_token)
     localStorage.setItem('sp_admin_user', JSON.stringify(userData))
     setAdmin(userData)
     return userData
@@ -50,6 +53,7 @@ export function AuthProvider({ children }) {
 
   const logout = () => {
     localStorage.removeItem('sp_admin_token')
+    localStorage.removeItem('sp_admin_refresh_token')
     localStorage.removeItem('sp_admin_user')
     setAdmin(null)
   }

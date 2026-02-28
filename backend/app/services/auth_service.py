@@ -274,6 +274,10 @@ async def create_school_user(
     phone: Optional[str] = None,
     created_by: Optional[str] = None,
 ) -> dict:
+    # Normalize UUID-like inputs to plain strings before JSON serialization.
+    school_id_str = str(school_id)
+    created_by_str = str(created_by) if created_by is not None else None
+
     # Step 1: Create Supabase Auth user
     try:
         auth_result = supabase_admin.auth.admin.create_user({
@@ -303,13 +307,13 @@ async def create_school_user(
     # Step 2: Create profile in users table
     try:
         user_result = make_query_client().table("users").insert({
-            "school_id": school_id,
+            "school_id": school_id_str,
             "auth_id": str(auth_user_id),
             "full_name": full_name,
             "email": email,
             "phone": phone,
             "role": role,
-            "created_by": created_by,
+            "created_by": created_by_str,
         }).execute()
     except Exception as e:
         supabase_admin.auth.admin.delete_user(str(auth_user_id))

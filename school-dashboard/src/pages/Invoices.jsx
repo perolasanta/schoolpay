@@ -1,6 +1,6 @@
 // src/pages/Invoices.jsx
 import { useState, useEffect, useCallback } from 'react'
-import { FileText, Zap, Download } from 'lucide-react'
+import { FileText, Zap, Download, ChevronLeft, ChevronRight } from 'lucide-react'
 import { PageHeader, Button, Select, EmptyState, Spinner, Modal } from '../components/ui'
 import api, { formatNaira, formatDate } from '../lib/api'
 import toast from 'react-hot-toast'
@@ -17,6 +17,8 @@ export default function Invoices() {
   const [loading, setLoading]     = useState(false)
   const [generating, setGenerating] = useState(false)
   const [showGenModal, setShowGenModal] = useState(false)
+  const [page, setPage]           = useState(1)
+  const PAGE_SIZE = 20
 
   // Load terms and classes on mount
   useEffect(() => {
@@ -32,6 +34,7 @@ export default function Invoices() {
         // Auto-select active term
         const active = termList.find(t => t.is_active)
         if (active) setTermId(active.id)
+        else if (termList.length > 0) setTermId(termList[0].id)
       } catch {
         toast.error('Failed to load terms')
       }
@@ -40,11 +43,14 @@ export default function Invoices() {
   }, [])
 
   // Load invoices when filters change
+  // Reset to page 1 when filters change
+  useEffect(() => { setPage(1) }, [termId, classId, statusFilter])
+
   const loadInvoices = useCallback(async () => {
     if (!termId) return
     setLoading(true)
     try {
-      const params = new URLSearchParams({ term_id: termId, page_size: 100 })
+      const params = new URLSearchParams({ term_id: termId, page_size: 500 })
       if (classId) params.set('class_id', classId)
       if (statusFilter) params.set('status', statusFilter)
       const res = await api.get(`/fees/invoices?${params}`)
@@ -63,7 +69,7 @@ export default function Invoices() {
     if (!termId) return toast.error('Select a term first')
     setGenerating(true)
     try {
-      const res = await api.post('/fees/generate-invoices', {
+      const res = await api.post('/fees/invoices/generate', {
         term_id: termId,
         apply_arrears: true,
         include_optional_fees: false,
@@ -82,6 +88,11 @@ export default function Invoices() {
   const activeTerm = terms.find(t => t.id === termId)
   const totalInvoiced   = invoices.reduce((s, i) => s + Number(i.total_amount || 0), 0)
   const totalCollected  = invoices.reduce((s, i) => s + Number(i.amount_paid || 0), 0)
+
+  // Client-side pagination
+  const totalPages = Math.max(1, Math.ceil(invoices.length / PAGE_SIZE))
+  const safePage   = Math.min(page, totalPages)
+  const pageSlice  = invoices.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   return (
     <div className="animate-in">
@@ -144,6 +155,7 @@ export default function Invoices() {
             description={termId ? "No invoices for the selected filters. Try generating bills first." : "Select a term to view invoices."}
           />
         ) : (
+          <>
           <div className="table-wrap">
             <table>
               <thead>
@@ -159,7 +171,7 @@ export default function Invoices() {
                 </tr>
               </thead>
               <tbody>
-                {invoices.map(inv => {
+                {pageSlice.map(inv => {
                   const balance = Number(inv.total_amount) - Number(inv.amount_paid)
                   return (
                     <tr key={inv.id}>
@@ -188,6 +200,35 @@ export default function Invoices() {
               </tbody>
             </table>
           </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', borderTop: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, invoices.length)} of {invoices.length} invoices
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage === 1}
+                  style={{ background: 'var(--navy-800)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '6px 12px', cursor: safePage === 1 ? 'default' : 'pointer', color: safePage === 1 ? 'var(--text-muted)' : 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                  <ChevronLeft size={14} /> Prev
+                </button>
+                {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                  const pg = totalPages <= 7 ? i + 1 : safePage <= 4 ? i + 1 : safePage >= totalPages - 3 ? totalPages - 6 + i : safePage - 3 + i
+                  return (
+                    <button key={pg} onClick={() => setPage(pg)}
+                      style={{ background: pg === safePage ? 'var(--gold-600)' : 'var(--navy-800)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '6px 10px', cursor: 'pointer', color: pg === safePage ? '#fff' : 'var(--text-secondary)', fontSize: 13, minWidth: 34 }}>
+                      {pg}
+                    </button>
+                  )
+                })}
+                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage === totalPages}
+                  style={{ background: 'var(--navy-800)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '6px 12px', cursor: safePage === totalPages ? 'default' : 'pointer', color: safePage === totalPages ? 'var(--text-muted)' : 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                  Next <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
+          </>
         )}
       </div>
 

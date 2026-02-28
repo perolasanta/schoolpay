@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     DB_SCHEMA: str = "schoolpay"
     ENVIRONMENT: str = "development"        # development | production
     DEBUG: bool = False
+    # PRIORITY-0: Keep production logs at INFO and suppress verbose HTTP wire logs by default.
+    HTTP_CLIENT_DEBUG_LOGS: bool = False
+
+    # PRIORITY-0: Brute-force protection knobs for login endpoints.
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 300
+    LOGIN_RATE_LIMIT_MAX_PER_IP: int = 20
+    LOGIN_RATE_LIMIT_MAX_PER_EMAIL: int = 10
+
+    # PRIORITY-0: Idempotency cache TTL (initialize/webhook replay protection).
+    IDEMPOTENCY_TTL_SECONDS: int = 600
 
     # ── API Settings ─────────────────────────────────────────
     API_PREFIX: str = "/api/v1"

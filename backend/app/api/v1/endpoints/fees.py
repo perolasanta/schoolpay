@@ -157,6 +157,80 @@ async def generate_invoices(
     return APIResponse(data=result, message=result.message)
 
 
+@router.get("/invoices/summary")
+async def invoice_summary(user: CurrentUser = Depends(get_active_user)):
+    """
+    Dashboard KPI card data.
+    Returns total invoiced, total collected, total outstanding, collection rate.
+    Uses the v_student_fee_status view for speed.
+    """
+    db = SchoolDB(str(user.school_id))
+
+    # Get active term; if none exists, fall back to latest created term.
+    active_term = (
+        db.select("terms", "id, name")
+        .eq("is_active", True)
+        .maybe_single()
+        .execute()
+    )
+    term_data = active_term.data or {}
+    term_id = term_data.get("id")
+
+    if not term_id:
+        latest_term = (
+            db.select("terms", "id, name")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_rows = latest_term.data or []
+        if latest_rows:
+            term_data = latest_rows[0]
+            term_id = term_data.get("id")
+
+    if not term_id:
+        return APIResponse(data={
+            "total_invoiced": 0,
+            "total_collected": 0,
+            "total_outstanding": 0,
+            "collection_rate": 0,
+            "paid_count": 0,
+            "partial_count": 0,
+            "unpaid_count": 0,
+            "total_count": 0,
+            "active_term": None,
+        })
+
+    result = (
+        db.select("invoices", "total_amount, amount_paid, status")
+        .eq("term_id", term_id)
+        .execute()
+    )
+    invoices = result.data or []
+
+    total_invoiced   = sum(float(i["total_amount"]) for i in invoices)
+    total_collected  = sum(float(i["amount_paid"])  for i in invoices)
+    total_outstanding = total_invoiced - total_collected
+    collection_rate  = round((total_collected / total_invoiced * 100), 1) if total_invoiced > 0 else 0
+
+    paid_count    = sum(1 for i in invoices if i["status"] == "paid")
+    partial_count = sum(1 for i in invoices if i["status"] == "partial")
+    unpaid_count  = sum(1 for i in invoices if i["status"] == "unpaid")
+
+    return APIResponse(data={
+        "total_invoiced":    total_invoiced,
+        "total_collected":   total_collected,
+        "total_outstanding": total_outstanding,
+        "collection_rate":   collection_rate,
+        "paid_count":        paid_count,
+        "partial_count":     partial_count,
+        "unpaid_count":      unpaid_count,
+        "total_count":       len(invoices),
+        "active_term":       term_data.get("name"),
+        "term_name":         term_data.get("name"),
+    })
+
+
 @router.get("/invoices", response_model=PaginatedResponse[InvoiceListItem])
 async def list_invoices_endpoint(
     user: CurrentUser = Depends(get_active_user),
@@ -167,7 +241,8 @@ async def list_invoices_endpoint(
     page_size: int = Query(default=50, ge=1, le=200),
     search: Optional[str] = Query(default=None),
 ):
-    # Default to active term if none specified
+    # Default to active term if none specified.
+    # If there is no active term yet, fall back to latest created term.
     if not term_id:
         db = SchoolDB(str(user.school_id))
         active = (
@@ -176,9 +251,19 @@ async def list_invoices_endpoint(
             .maybe_single()
             .execute()
         )
-        if not active.data:
-            raise HTTPException(status_code=400, detail="No active term. Please set one.")
-        term_id = active.data["id"]
+        if active.data:
+            term_id = active.data["id"]
+        else:
+            latest = (
+                db.select("terms", "id")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            latest_rows = latest.data or []
+            if not latest_rows:
+                raise HTTPException(status_code=400, detail="No term found. Please create a term first.")
+            term_id = latest_rows[0]["id"]
 
     params = PaginationParams(page=page, page_size=page_size, search=search)
     items, total = await list_invoices(
@@ -243,62 +328,3 @@ async def get_public_invoice(payment_token: str):
     result = await get_invoice_by_token(payment_token)
     result["paystack_public_key"] = settings.PAYSTACK_PUBLIC_KEY
     return APIResponse(data=result)
-
-@router.get("/invoices/summary")
-async def invoice_summary(user: CurrentUser = Depends(get_active_user)):
-    """
-    Dashboard KPI card data.
-    Returns total invoiced, total collected, total outstanding, collection rate.
-    Uses the v_student_fee_status view for speed.
-    """
-    db = SchoolDB(str(user.school_id))
-
-    # Get active term
-    active_term = (
-        db.select("terms", "id, name")
-        .eq("is_active", True)
-        .execute()
-    )
-    term_data = (active_term.data or [{}])[0]
-    term_id = term_data.get("id")
-
-    if not term_id:
-        return APIResponse(data={
-            "total_invoiced": 0,
-            "total_collected": 0,
-            "total_outstanding": 0,
-            "collection_rate": 0,
-            "paid_count": 0,
-            "partial_count": 0,
-            "unpaid_count": 0,
-            "total_count": 0,
-            "active_term": None,
-        })
-
-    result = (
-        db.select("invoices", "total_amount, amount_paid, status")
-        .eq("term_id", term_id)
-        .execute()
-    )
-    invoices = result.data or []
-
-    total_invoiced   = sum(float(i["total_amount"]) for i in invoices)
-    total_collected  = sum(float(i["amount_paid"])  for i in invoices)
-    total_outstanding = total_invoiced - total_collected
-    collection_rate  = round((total_collected / total_invoiced * 100), 1) if total_invoiced > 0 else 0
-
-    paid_count    = sum(1 for i in invoices if i["status"] == "paid")
-    partial_count = sum(1 for i in invoices if i["status"] == "partial")
-    unpaid_count  = sum(1 for i in invoices if i["status"] == "unpaid")
-
-    return APIResponse(data={
-        "total_invoiced":    total_invoiced,
-        "total_collected":   total_collected,
-        "total_outstanding": total_outstanding,
-        "collection_rate":   collection_rate,
-        "paid_count":        paid_count,
-        "partial_count":     partial_count,
-        "unpaid_count":      unpaid_count,
-        "total_count":       len(invoices),
-        "active_term":       term_data.get("name"),
-    })

@@ -10,11 +10,11 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 
-from app.core.database import make_query_client, supabase_admin
-from app.core.security import TokenData, get_current_user
+from app.core.database import make_query_client
+from app.core.security import CurrentUser, require_platform_admin
 
 logger = logging.getLogger(__name__)
 
@@ -23,27 +23,29 @@ router = APIRouter(prefix="/platform/team", tags=["Platform Team"])
 VALID_PLATFORM_ROLES = {"platform_admin", "platform_support"}
 
 
-def require_platform_admin(current_user: TokenData = Depends(get_current_user)) -> TokenData:
-    if current_user.role not in ("platform_admin",):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Platform admin access required.",
-        )
-    return current_user
-
-
 # ── List Team ──────────────────────────────────────────────────────────────
 @router.get("")
-async def list_team(current_user: TokenData = Depends(require_platform_admin)):
+async def list_team(current_user: CurrentUser = Depends(require_platform_admin)):
     try:
         db = make_query_client()
         db.postgrest.schema("schoolpay")
-        result = (
-            db.table("platform_users")
-            .select("id, full_name, email, role, is_active, last_login, created_at")
-            .order("created_at", desc=False)
-            .execute()
-        )
+        try:
+            result = (
+                db.table("platform_users")
+                .select("id, full_name, email, role, is_active, last_login, created_at")
+                .order("created_at", desc=False)
+                .execute()
+            )
+        except Exception as inner_e:
+            # Backward compatibility: some DBs don't have platform_users.last_login yet.
+            if "platform_users.last_login does not exist" not in str(inner_e):
+                raise
+            result = (
+                db.table("platform_users")
+                .select("id, full_name, email, role, is_active, created_at")
+                .order("created_at", desc=False)
+                .execute()
+            )
         rows = getattr(result, "data", None) or []
         return {"success": True, "data": rows}
     except Exception as e:
@@ -62,7 +64,7 @@ class CreateTeamMemberRequest(BaseModel):
 @router.post("", status_code=201)
 async def create_team_member(
     body: CreateTeamMemberRequest,
-    current_user: TokenData = Depends(require_platform_admin),
+    current_user: CurrentUser = Depends(require_platform_admin),
 ):
     if body.role not in VALID_PLATFORM_ROLES:
         raise HTTPException(
@@ -74,7 +76,7 @@ async def create_team_member(
 
     # Create Supabase Auth user
     try:
-        auth_result = supabase_admin.auth.admin.create_user({
+        auth_result = make_query_client().auth.admin.create_user({
             "email": body.email,
             "password": body.password,
             "email_confirm": True,
@@ -90,19 +92,16 @@ async def create_team_member(
     try:
         db = make_query_client()
         db.postgrest.schema("schoolpay")
-        result = (
-            db.table("platform_users")
-            .insert({
-                "auth_id": str(auth_id),
-                "full_name": body.full_name,
-                "email": body.email,
-                "role": body.role,
-                "created_by": current_user.user_id,
-            })
-            .execute()
-        )
+        payload = {
+            "auth_id": str(auth_id),
+            "full_name": body.full_name,
+            "email": body.email,
+            "role": body.role,
+            "created_by": str(current_user.user_id),
+        }
+        result = db.table("platform_users").insert(payload).execute()
     except Exception as e:
-        supabase_admin.auth.admin.delete_user(str(auth_id))
+        make_query_client().auth.admin.delete_user(str(auth_id))
         raise HTTPException(status_code=500, detail=f"Failed to create profile: {e}")
 
     rows = getattr(result, "data", None) or []
@@ -119,10 +118,10 @@ class UpdateTeamMemberRequest(BaseModel):
 async def update_team_member(
     member_id: UUID,
     body: UpdateTeamMemberRequest,
-    current_user: TokenData = Depends(require_platform_admin),
+    current_user: CurrentUser = Depends(require_platform_admin),
 ):
     # Prevent self-deactivation
-    if str(member_id) == current_user.user_id and body.is_active is False:
+    if str(member_id) == str(current_user.user_id) and body.is_active is False:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
 
     if body.role is not None and body.role not in VALID_PLATFORM_ROLES:

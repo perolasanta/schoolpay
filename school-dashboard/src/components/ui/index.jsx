@@ -136,6 +136,8 @@ export function Modal({ title, children, onClose, width = 480 }) {
           borderRadius: 'var(--radius-lg)',
           width: '100%', maxWidth: width,
           boxShadow: 'var(--shadow-lg)',
+          display: 'flex', flexDirection: 'column',
+          maxHeight: 'calc(100vh - 48px)',
           overflow: 'hidden',
         }}
       >
@@ -143,13 +145,14 @@ export function Modal({ title, children, onClose, width = 480 }) {
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '20px 24px',
           borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
         }}>
           <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 18 }}>{title}</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4, borderRadius: 4 }}>
             <X size={18} />
           </button>
         </div>
-        <div style={{ padding: 24 }}>{children}</div>
+        <div style={{ padding: 24, overflowY: 'auto', flex: 1 }}>{children}</div>
       </div>
     </div>
   )

@@ -31,6 +31,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# PRIORITY-0: Never leak auth headers/tokens from low-level HTTP debug logs.
+# In production we force these noisy client loggers down to WARNING.
+if settings.is_production and not settings.HTTP_CLIENT_DEBUG_LOGS:
+    for noisy_logger in ("httpx", "httpcore", "hpack"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
 
 # ── Startup / Shutdown ───────────────────────────────────────
 @asynccontextmanager

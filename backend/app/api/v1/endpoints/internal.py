@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+import hmac
 import logging
 
 from app.core.config import settings
@@ -41,7 +42,8 @@ def verify_internal_key(x_internal_key: str = Header(...)):
     Shared secret for n8n → FastAPI communication.
     Simple but effective when combined with network-level isolation.
     """
-    if x_internal_key != settings.INTERNAL_SECRET_KEY:
+    # PRIORITY-0: Use constant-time compare for shared-secret validation.
+    if not hmac.compare_digest(x_internal_key, settings.INTERNAL_SECRET_KEY):
         raise HTTPException(status_code=403, detail="Forbidden")
     return True
 

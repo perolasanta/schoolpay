@@ -29,10 +29,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from jose import JWTError, jwt
+from supabase import create_client
+from supabase.lib.client_options import SyncClientOptions
 
 from app.core.config import settings
-from app.core.database import supabase_admin
-from app.core.security import require_platform_admin, CurrentUser, create_access_token, TokenData
+from app.core.database import supabase_admin, make_query_client
+from app.core.security import require_platform_admin, CurrentUser, create_access_token, create_refresh_token, TokenData
 
 router = APIRouter(prefix="/platform", tags=["Platform Admin"])
 
@@ -47,18 +50,23 @@ class PlatformLoginRequest(BaseModel):
 
 class PlatformLoginResponse(BaseModel):
     access_token: str
+    refresh_token: str
     admin_name: str
     admin_email: str
     admin_role: str
 
 
+class PlatformRefreshRequest(BaseModel):
+    refresh_token: str
+
+
 def _normalize_platform_role(raw_role: Optional[str]) -> str:
     role = (raw_role or "").strip().lower()
-    if role in {"platform_admin", "admin", "super_admin", "owner", "platform_owner"}:
+    if role == "platform_admin":
         return "platform_admin"
-    if role in {"platform_support", "support", "support_staff"}:
+    if role == "platform_support":
         return "platform_support"
-    return "platform_support"
+    raise HTTPException(status_code=403, detail="Invalid platform role configuration.")
 
 
 @router.post("/auth/login", response_model=PlatformLoginResponse)
@@ -74,7 +82,12 @@ async def platform_login(body: PlatformLoginRequest):
     """
     # Verify with Supabase Auth
     try:
-        auth_res = supabase_admin.auth.sign_in_with_password({
+        auth_client = create_client(
+            settings.SUPABASE_URL,
+            settings.SUPABASE_ANON_KEY,
+            options=SyncClientOptions(schema="schoolpay"),
+        )
+        auth_res = auth_client.auth.sign_in_with_password({
             "email": body.email,
             "password": body.password,
         })
@@ -85,7 +98,7 @@ async def platform_login(body: PlatformLoginRequest):
 
     # Verify this user is in platform_users (not just any Supabase user)
     admin = (
-        supabase_admin.table("platform_users")
+        make_query_client().table("platform_users")
         .select("id, full_name, email, role, is_active")
         .eq("email", body.email)
         .eq("is_active", True)
@@ -113,9 +126,67 @@ async def platform_login(body: PlatformLoginRequest):
         full_name=a["full_name"],
         is_platform_admin=(admin_role == "platform_admin"),
     ))
+    refresh_token = create_refresh_token(
+        user_id=str(a["id"]),
+        school_id="00000000-0000-0000-0000-000000000000",
+    )
 
     return PlatformLoginResponse(
         access_token=token,
+        refresh_token=refresh_token,
+        admin_name=a["full_name"],
+        admin_email=a["email"],
+        admin_role=admin_role,
+    )
+
+
+@router.post("/auth/refresh", response_model=PlatformLoginResponse)
+async def platform_refresh(body: PlatformRefreshRequest):
+    """
+    PRIORITY-0: Platform refresh endpoint for silent token renewal in super-admin UI.
+    """
+    try:
+        payload = jwt.decode(
+            body.refresh_token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+        user_id = str(payload.get("user_id") or "")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    except (JWTError, HTTPException):
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    admin = (
+        make_query_client().table("platform_users")
+        .select("id, full_name, email, role, is_active")
+        .eq("id", user_id)
+        .eq("is_active", True)
+        .maybe_single()
+        .execute()
+    )
+    if not admin.data:
+        raise HTTPException(status_code=401, detail="Platform user not found")
+
+    a = admin.data
+    admin_role = _normalize_platform_role(a.get("role"))
+    token = create_access_token(TokenData(
+        user_id=str(a["id"]),
+        school_id="00000000-0000-0000-0000-000000000000",
+        role=admin_role,
+        email=a["email"],
+        full_name=a["full_name"],
+        is_platform_admin=(admin_role == "platform_admin"),
+    ))
+    refresh_token = create_refresh_token(
+        user_id=str(a["id"]),
+        school_id="00000000-0000-0000-0000-000000000000",
+    )
+    return PlatformLoginResponse(
+        access_token=token,
+        refresh_token=refresh_token,
         admin_name=a["full_name"],
         admin_email=a["email"],
         admin_role=admin_role,

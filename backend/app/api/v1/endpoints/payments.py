@@ -19,8 +19,9 @@
 import hashlib
 import hmac
 import json
+import time
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime, timezone
 
 import httpx
@@ -47,18 +48,50 @@ from app.utils.pdf_receipt import generate_receipt_pdf
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
+# PRIORITY-0: In-memory idempotency caches to handle retries safely.
+_INIT_IDEMPOTENCY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_WEBHOOK_EVENT_CACHE: dict[str, float] = {}
+
+
+def _clean_idempotency_cache(now_ts: float, ttl_seconds: int) -> None:
+    stale_init = [k for k, (ts, _) in _INIT_IDEMPOTENCY_CACHE.items() if (now_ts - ts) > ttl_seconds]
+    for k in stale_init:
+        _INIT_IDEMPOTENCY_CACHE.pop(k, None)
+
+    stale_webhook = [k for k, ts in _WEBHOOK_EVENT_CACHE.items() if (now_ts - ts) > ttl_seconds]
+    for k in stale_webhook:
+        _WEBHOOK_EVENT_CACHE.pop(k, None)
+
 
 # ═══════════════════════════════════════════════════════════
 # FLOW 1: PAYSTACK ONLINE — initialize
 # ═══════════════════════════════════════════════════════════
 
 @router.post("/initialize", response_model=APIResponse[InitializePaymentResponse])
-async def initialize_payment(body: InitializePaymentRequest):
+async def initialize_payment(body: InitializePaymentRequest, request: Request):
     """
     Called from the parent's browser on the public payment page.
     No JWT — the payment_token is the credential (from the SMS link).
     Uses supabase_admin because there is no user session.
     """
+    now_ts = time.time()
+    ttl_seconds = settings.IDEMPOTENCY_TTL_SECONDS
+    _clean_idempotency_cache(now_ts, ttl_seconds)
+
+    # PRIORITY-0: Client can send X-Idempotency-Key. We also derive a deterministic fallback.
+    idem_key = request.headers.get("x-idempotency-key") or f"{body.invoice_id}:{body.payment_token}:{body.email.strip().lower()}"
+    cached = _INIT_IDEMPOTENCY_CACHE.get(idem_key)
+    if cached and (now_ts - cached[0]) <= ttl_seconds:
+        replay = cached[1]
+        return APIResponse(
+            data=InitializePaymentResponse(
+                authorization_url=replay["authorization_url"],
+                access_code=replay["access_code"],
+                reference=replay["reference"],
+            ),
+            message="Idempotent replay",
+        )
+
     invoice = (
         supabase_admin.table("invoices")
         .select("id, school_id, student_id, total_amount, amount_paid, status, currency")
@@ -111,6 +144,15 @@ async def initialize_payment(body: InitializePaymentRequest):
         "currency":       inv.get("currency", "NGN"),
     }).execute()
 
+    _INIT_IDEMPOTENCY_CACHE[idem_key] = (
+        now_ts,
+        {
+            "authorization_url": data["authorization_url"],
+            "access_code": data["access_code"],
+            "reference": data["reference"],
+        },
+    )
+
     return APIResponse(data=InitializePaymentResponse(
         authorization_url=data["authorization_url"],
         access_code=data["access_code"],
@@ -151,11 +193,20 @@ async def paystack_webhook(request: Request):
 
     data      = event["data"]
     reference = data.get("reference")
+    event_id = str(data.get("id") or reference or "")
     metadata  = data.get("metadata") or {}
     invoice_id = metadata.get("invoice_id")
 
     if not reference or not invoice_id:
         return {"status": "missing_data"}
+
+    now_ts = time.time()
+    ttl_seconds = settings.IDEMPOTENCY_TTL_SECONDS
+    _clean_idempotency_cache(now_ts, ttl_seconds)
+
+    # PRIORITY-0: Idempotent webhook replay protection across retried events.
+    if event_id and event_id in _WEBHOOK_EVENT_CACHE:
+        return {"status": "duplicate_event"}
 
     # Find the pending payment we created during initialize
     payment = (
@@ -191,6 +242,8 @@ async def paystack_webhook(request: Request):
         student_id=pay["student_id"], amount=pay["amount"],
         receipt_number=receipt_number, payment_method="paystack",
     )
+    if event_id:
+        _WEBHOOK_EVENT_CACHE[event_id] = now_ts
     return {"status": "processed"}
 
 
@@ -419,6 +472,42 @@ async def void_payment(
 # PAYMENT HISTORY
 # ═══════════════════════════════════════════════════════════
 
+@router.get("/recent")
+async def recent_payments(
+    user: CurrentUser = Depends(get_active_user),
+    limit: int = Query(default=8, ge=1, le=50),
+):
+    """
+    Returns the most recent payments for the dashboard activity feed.
+    """
+    db = SchoolDB(str(user.school_id))
+
+    result = (
+        db.select(
+            "payments",
+            "id, amount, payment_method, status, receipt_number, created_at, payment_date, "
+            "students(first_name, last_name)"
+        )
+        .eq("status", "success")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+
+    payments = []
+    for p in (result.data or []):
+        student = p.get("students") or {}
+        payments.append({
+            "id":             p["id"],
+            "amount":         float(p["amount"]),
+            "payment_method": p["payment_method"],
+            "receipt_number": p.get("receipt_number"),
+            "created_at":     p["created_at"],
+            "payment_date":   p.get("payment_date") or p["created_at"],
+            "student_name":   f"{student.get('first_name', '')} {student.get('last_name', '')}".strip(),
+        })
+
+    return APIResponse(data=payments)
 @router.get("/history/{invoice_id}", response_model=APIResponse[List[PaymentResponse]])
 async def get_payment_history(
     invoice_id: str,
@@ -551,42 +640,5 @@ async def download_receipt_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
-
-
-@router.get("/recent")
-async def recent_payments(
-    user: CurrentUser = Depends(get_active_user),
-    limit: int = Query(default=8, ge=1, le=50),
-):
-    """
-    Returns the most recent payments for the dashboard activity feed.
-    """
-    db = SchoolDB(str(user.school_id))
-
-    result = (
-        db.select(
-            "payments",
-            "id, amount, payment_method, status, receipt_number, created_at, "
-            "students(first_name, last_name)"
-        )
-        .eq("status", "success")
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-
-    payments = []
-    for p in (result.data or []):
-        student = p.get("students") or {}
-        payments.append({
-            "id":             p["id"],
-            "amount":         float(p["amount"]),
-            "payment_method": p["payment_method"],
-            "receipt_number": p.get("receipt_number"),
-            "created_at":     p["created_at"],
-            "student_name":   f"{student.get('first_name', '')} {student.get('last_name', '')}".strip(),
-        })
-
-    return APIResponse(data=payments)
 
 

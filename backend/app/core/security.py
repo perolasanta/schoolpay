@@ -224,7 +224,7 @@ async def require_active_subscription(
 
         school = result.data
         if not school:
-            raise HTTPException(status_code=404, detail="School not found")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="School account not found. Contact SchoolPay support.")
 
         if not school["is_active"]:
             raise HTTPException(

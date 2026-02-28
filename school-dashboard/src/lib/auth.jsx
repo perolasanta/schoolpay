@@ -23,8 +23,10 @@ export function AuthProvider({ children }) {
 
   const login = async (email, password) => {
     const res = await api.post('/auth/login', { email, password })
-    const { access_token, user: userData } = res.data.data
+    const { access_token, refresh_token, user: userData } = res.data.data
     localStorage.setItem('sp_token', access_token)
+    // PRIORITY-0: Persist refresh token for silent renewal.
+    if (refresh_token) localStorage.setItem('sp_refresh_token', refresh_token)
     localStorage.setItem('sp_user', JSON.stringify(userData))
     setUser(userData)
     return userData
@@ -32,6 +34,7 @@ export function AuthProvider({ children }) {
 
   const logout = () => {
     localStorage.removeItem('sp_token')
+    localStorage.removeItem('sp_refresh_token')
     localStorage.removeItem('sp_user')
     setUser(null)
   }
