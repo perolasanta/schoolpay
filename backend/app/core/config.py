@@ -52,6 +52,8 @@ class Settings(BaseSettings):
 
     # PRIORITY-0: Idempotency cache TTL (initialize/webhook replay protection).
     IDEMPOTENCY_TTL_SECONDS: int = 600
+    # Shared local store so idempotency works across multiple workers.
+    IDEMPOTENCY_DB_PATH: str = "/tmp/schoolpay_idempotency.db"
 
     # ── API Settings ─────────────────────────────────────────
     API_PREFIX: str = "/api/v1"

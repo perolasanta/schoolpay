@@ -2,7 +2,7 @@
 // Role-aware sidebar: nav items filter by the logged-in user's role.
 // school_admin sees Users link. bursar/teacher/accountant do not.
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, FileText, CreditCard,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../../lib/auth'
 import { allowedNav, roleInfo } from '../../lib/permissions'
+import api from '../../lib/api'
 
 // All possible nav items — filtered by allowedNav(role)
 const ALL_NAV = [
@@ -29,6 +30,19 @@ export default function AppLayout({ children }) {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [pendingCount, setPendingCount] = useState(0)
+
+useEffect(() => {
+  const fetchPending = () => {
+    api.get('/payments/transfer/pending')
+      .then(res => setPendingCount((res.data.data || []).length))
+      .catch(() => {})
+  }
+  fetchPending()
+  // Poll every 60 seconds so badge stays fresh
+  const interval = setInterval(fetchPending, 60000)
+  return () => clearInterval(interval)
+}, [])
 
   const handleLogout = () => { logout(); navigate('/login') }
 
@@ -120,16 +134,22 @@ export default function AppLayout({ children }) {
             >
               <Icon size={16} />
               {label}
-              {badge && (
-                <span style={{
-                  marginLeft: 'auto',
-                  background: 'var(--danger)',
-                  color: 'white',
-                  fontSize: 10, fontWeight: 700,
-                  borderRadius: 10, padding: '1px 6px',
-                }}>!</span>
-              )}
-            </NavLink>
+              
+		{badge && pendingCount > 0 && (
+		  <span style={{
+		    marginLeft: 'auto',
+		    background: 'var(--danger)',
+		    color: 'white',
+		    fontSize: 10, fontWeight: 700,
+		    borderRadius: 10,
+		    padding: pendingCount > 9 ? '1px 5px' : '1px 6px',
+		    minWidth: 16,
+		    textAlign: 'center',
+		    lineHeight: '14px',
+		    display: 'inline-block',
+		    animation: 'pulse 2s infinite',
+		  }}>{pendingCount > 99 ? '99+' : pendingCount}</span>
+		)}            </NavLink>
           ))}
         </nav>
 

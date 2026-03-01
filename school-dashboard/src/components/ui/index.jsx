@@ -125,6 +125,7 @@ export function Modal({ title, children, onClose, width = 480 }) {
         backdropFilter: 'blur(4px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: 16,
+        paddingBottom: '216px',
       }}
     >
       <div

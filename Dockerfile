@@ -32,8 +32,8 @@ WORKDIR /app
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy application code
-COPY app/ ./app/
+# Copy backend application code
+COPY backend/app/ ./app/
 
 # Create a non-root user for security
 # Running as root inside Docker is a security risk

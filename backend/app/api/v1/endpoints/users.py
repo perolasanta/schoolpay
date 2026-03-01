@@ -4,13 +4,14 @@
 # GET  /users           → list all users in this school
 # POST /users           → invite new staff member
 # PATCH /users/{id}     → update role or is_active
+# DELETE /users/{id}    → permanently delete a staff user (cannot delete self)
 # ============================================================
 
 import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr
 
 from app.core.database import make_query_client, supabase_admin
@@ -187,3 +188,50 @@ async def update_user(
 
     updated_rows = getattr(result, "data", None) or []
     return {"success": True, "data": updated_rows[0] if updated_rows else {}}
+
+
+@router.delete("/{user_id}", status_code=204)
+async def delete_user(
+    user_id: UUID,
+    current_user: TokenData = Depends(require_admin),
+):
+    """
+    Permanently remove a staff user from this school.
+    Activity logs are preserved (they reference user_id which remains in audit trail).
+    Cannot delete yourself.
+    """
+    if str(user_id) == current_user.user_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+
+    db = make_query_client()
+    db.postgrest.schema("schoolpay")
+
+    existing = (
+        db.table("users")
+        .select("id, email")
+        .eq("id", str(user_id))
+        .eq("school_id", current_user.school_id)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(existing, "data", None) or []
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found in your school.",
+        )
+
+    db2 = make_query_client()
+    db2.postgrest.schema("schoolpay")
+    db2.table("users").delete().eq("id", str(user_id)).eq("school_id", current_user.school_id).execute()
+
+    await log_activity(
+        school_id=current_user.school_id,
+        user_id=current_user.user_id,
+        action="users.delete",
+        entity_type="user",
+        entity_id=str(user_id),
+        metadata={"email": rows[0].get("email")},
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -3,7 +3,7 @@
 // Shows capability matrix for platform roles.
 
 import { useState, useEffect } from 'react'
-import { UserPlus, Check, X, UserX, RefreshCw, ShieldCheck } from 'lucide-react'
+import { UserPlus, Check, X, UserX, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 import { PLATFORM_PERMISSIONS, PLATFORM_ROLE_OPTIONS, roleInfo } from '../lib/permissions'
 import api from '../lib/api'
 import toast from 'react-hot-toast'
@@ -50,6 +50,17 @@ export default function Team() {
       load()
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed')
+    }
+  }
+
+  const handleDelete = async (id, name) => {
+    if (!window.confirm(`Permanently remove ${name} from platform team?\n\nThis cannot be undone.`)) return
+    try {
+      await api.delete(`/platform/team/${id}`)
+      toast.success(`${name} removed`)
+      load()
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to remove member')
     }
   }
 
@@ -155,16 +166,27 @@ export default function Team() {
                         </span>
                       </td>
                       <td>
-                        <Button
-                          variant={m.is_active ? 'danger' : 'success'}
-                          size="sm"
-                          onClick={() => handleDeactivate(m.id, m.is_active)}
-                        >
-                          {m.is_active
-                            ? <><UserX size={13} /> Deactivate</>
-                            : <><RefreshCw size={13} /> Reactivate</>
-                          }
-                        </Button>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <Button
+                            variant={m.is_active ? 'danger' : 'success'}
+                            size="sm"
+                            onClick={() => handleDeactivate(m.id, m.is_active)}
+                          >
+                            {m.is_active
+                              ? <><UserX size={13} /> Deactivate</>
+                              : <><RefreshCw size={13} /> Reactivate</>
+                            }
+                          </Button>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => handleDelete(m.id, m.full_name)}
+                            title="Permanently remove this team member"
+                            style={{ padding: '4px 8px' }}
+                          >
+                            <Trash2 size={13} />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   )

@@ -51,6 +51,12 @@ class TokenData(BaseModel):
     is_platform_admin: bool = False
 
 
+class RefreshTokenData(BaseModel):
+    """Minimal payload embedded in refresh JWTs."""
+    user_id: str
+    school_id: str
+
+
 class CurrentUser(BaseModel):
     """Available in every protected endpoint via Depends."""
     user_id: UUID
@@ -135,6 +141,30 @@ def verify_token(token: str) -> TokenData:
         if payload.get("type") != "access":
             raise credentials_exception
         return TokenData(**payload)
+    except JWTError:
+        raise credentials_exception
+
+
+def verify_refresh_token(token: str) -> RefreshTokenData:
+    """
+    Decode and verify a refresh JWT. Raises HTTPException if invalid.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired refresh token. Please log in again.",
+    )
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        if payload.get("type") != "refresh":
+            raise credentials_exception
+        return RefreshTokenData(
+            user_id=str(payload.get("user_id") or ""),
+            school_id=str(payload.get("school_id") or ""),
+        )
     except JWTError:
         raise credentials_exception
 

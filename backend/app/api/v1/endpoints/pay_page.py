@@ -83,6 +83,7 @@ async def get_payment_page(token: str):
 
 class InitiateOnlinePayment(BaseModel):
     email: EmailStr     # Paystack needs an email for their receipt
+    amount: float | None = None
 
 
 @router.post("/{token}/paystack")
@@ -136,7 +137,8 @@ async def initiate_paystack_payment(token: str, body: InitiateOnlinePayment):
             headers={"Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}"},
             json={
                 "email":    body.email,
-                "amount":   int(balance * 100),     # Paystack uses kobo
+                "amount":   int(min(Decimal(str(body.amount)), balance) * 100) if body.amount else int(balance * 100),
+     # Paystack uses kobo
                 "currency": inv.get("currency", "NGN"),
                 "metadata": {
                     "invoice_id":    inv["id"],
@@ -239,6 +241,56 @@ async def get_payment_status(token: str, reference: str | None = None):
 # ── GET /pay/{token}/receipt ──────────────────────────────────
 # Parent can download their PDF receipt from the payment page.
 # No JWT — token is the credential.
+class PublicTransferRequest(BaseModel):
+    amount: float
+    reference: str
+    narration: str = ""
+    branch: str = ""
+
+@router.post("/{token}/transfer")
+async def public_submit_transfer(token: str, body: PublicTransferRequest):
+    """
+    Parent submits bank transfer proof from the SMS payment link.
+    No JWT — payment_token is the credential.
+    Creates a pending payment for bursar to approve.
+    """
+    inv_result = (
+        supabase_admin.table("invoices")
+        .select("id, school_id, student_id, total_amount, amount_paid, status")
+        .eq("payment_token", token)
+        .maybe_single()
+        .execute()
+    )
+    if not inv_result.data:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    inv = inv_result.data
+    if inv["status"] == "paid":
+        raise HTTPException(status_code=400, detail="This invoice is already fully paid.")
+
+    balance = Decimal(str(inv["total_amount"])) - Decimal(str(inv["amount_paid"]))
+    if balance <= 0:
+        raise HTTPException(status_code=400, detail="No outstanding balance.")
+
+    result = supabase_admin.table("payments").insert({
+        "school_id":       inv["school_id"],
+        "invoice_id":      inv["id"],
+        "student_id":      inv["student_id"],
+        "amount":          float(body.amount),
+        "payment_method":  "bank_transfer",
+        "reference":       body.reference,
+        "narration":       body.narration,
+        "branch":          body.branch,
+        "status":          "pending",
+        "approval_status": "pending_approval",
+        "currency":        "NGN",
+    }).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to record transfer.")
+
+    return {"message": "Transfer submitted. The bursar will confirm within 24 hours.", "payment_id": result.data[0]["id"]}
+
 
 @router.get("/{token}/receipt")
 async def download_receipt_by_token(token: str, payment_ref: str | None = None):

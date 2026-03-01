@@ -6,7 +6,7 @@
 import { useState, useEffect } from 'react'
 import {
   UserPlus, ShieldCheck, MoreVertical,
-  UserX, RefreshCw, Check, X, Info,
+  UserX, RefreshCw, Check, X, Info, Trash2,
 } from 'lucide-react'
 import { PageHeader, Button, Input, Select, Modal, EmptyState, Spinner } from '../components/ui'
 import { SCHOOL_PERMISSIONS, SCHOOL_ROLE_OPTIONS, roleInfo } from '../lib/permissions'
@@ -55,6 +55,17 @@ export default function Users() {
       toast.error(err.response?.data?.detail || 'Failed to update role')
     }
   }
+
+  const handleDelete = async (userId, userName) => {
+  if (!window.confirm(`Permanently remove ${userName} from this school?\n\nThis cannot be undone. Their activity logs will be preserved.`)) return
+  try {
+    await api.delete(`/users/${userId}`)
+    toast.success(`${userName} removed`)
+    load()
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Failed to remove user')
+  }
+}
 
   const activeCount   = users.filter(u => u.is_active).length
   const inactiveCount = users.filter(u => !u.is_active).length
@@ -168,16 +179,27 @@ export default function Users() {
                         </span>
                       </td>
                       <td>
-                        <Button
-                          variant={u.is_active ? 'danger' : 'success'}
-                          size="sm"
-                          onClick={() => handleDeactivate(u.id, u.is_active)}
-                        >
-                          {u.is_active
-                            ? <><UserX size={13} /> Deactivate</>
-                            : <><RefreshCw size={13} /> Reactivate</>
-                          }
-                        </Button>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <Button
+                            variant={u.is_active ? 'danger' : 'success'}
+                            size="sm"
+                            onClick={() => handleDeactivate(u.id, u.is_active)}
+                          >
+                            {u.is_active
+                              ? <><UserX size={13} /> Deactivate</>
+                              : <><RefreshCw size={13} /> Reactivate</>
+                            }
+                          </Button>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => handleDelete(u.id, u.full_name)}
+                            title="Permanently remove this user"
+                            style={{ padding: '4px 8px' }}
+                          >
+                            <Trash2 size={13} />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   )

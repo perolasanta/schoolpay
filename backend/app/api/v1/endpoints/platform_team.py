@@ -4,13 +4,14 @@
 # GET   /platform/team        → list all platform users
 # POST  /platform/team        → add new team member
 # PATCH /platform/team/{id}   → update role or deactivate
+# DELETE /platform/team/{id}  → permanently remove team member
 # ============================================================
 
 import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr
 
 from app.core.database import make_query_client
@@ -148,3 +149,45 @@ async def update_team_member(
 
     rows = getattr(result, "data", None) or []
     return {"success": True, "data": rows[0] if rows else {}}
+
+
+@router.delete("/{member_id}", status_code=204)
+async def delete_team_member(
+    member_id: UUID,
+    current_user: CurrentUser = Depends(require_platform_admin),
+):
+    # Prevent self-deletion
+    if str(member_id) == str(current_user.user_id):
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+
+    db = make_query_client()
+    db.postgrest.schema("schoolpay")
+
+    existing = (
+        db.table("platform_users")
+        .select("id, email, auth_id")
+        .eq("id", str(member_id))
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(existing, "data", None) or []
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team member not found.",
+        )
+
+    member = rows[0]
+
+    db2 = make_query_client()
+    db2.postgrest.schema("schoolpay")
+    db2.table("platform_users").delete().eq("id", str(member_id)).execute()
+
+    auth_id = member.get("auth_id")
+    if auth_id:
+        try:
+            make_query_client().auth.admin.delete_user(str(auth_id))
+        except Exception as e:
+            logger.warning(f"delete_team_member auth cleanup warning for {member_id}: {e}")
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

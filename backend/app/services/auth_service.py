@@ -14,7 +14,7 @@ from supabase.lib.client_options import SyncClientOptions
 from app.core.config import settings
 from app.core.database import supabase_admin
 from app.core.security import (
-    TokenData, create_access_token, create_refresh_token, verify_token
+    TokenData, create_access_token, create_refresh_token, verify_refresh_token
 )
 from app.schemas.auth import LoginRequest, TokenResponse, UserProfile
 from app.services.activity_service import log_activity
@@ -181,7 +181,7 @@ async def login_user(request: LoginRequest) -> TokenResponse:
 
 async def refresh_access_token(refresh_token_str: str) -> TokenResponse:
     try:
-        payload = verify_token(refresh_token_str)
+        payload = verify_refresh_token(refresh_token_str)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

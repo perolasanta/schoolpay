@@ -19,9 +19,8 @@
 import hashlib
 import hmac
 import json
-import time
 from decimal import Decimal
-from typing import Optional, List, Any
+from typing import Optional, List
 from datetime import datetime, timezone
 
 import httpx
@@ -45,22 +44,13 @@ from app.services.activity_service import log_activity
 from app.utils.receipt import generate_receipt_number
 from app.utils.sms import notify_payment_to_n8n
 from app.utils.pdf_receipt import generate_receipt_pdf
+from app.utils.idempotency import (
+    get_init_replay,
+    remember_init_replay,
+    mark_webhook_event_seen,
+)
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
-
-# PRIORITY-0: In-memory idempotency caches to handle retries safely.
-_INIT_IDEMPOTENCY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_WEBHOOK_EVENT_CACHE: dict[str, float] = {}
-
-
-def _clean_idempotency_cache(now_ts: float, ttl_seconds: int) -> None:
-    stale_init = [k for k, (ts, _) in _INIT_IDEMPOTENCY_CACHE.items() if (now_ts - ts) > ttl_seconds]
-    for k in stale_init:
-        _INIT_IDEMPOTENCY_CACHE.pop(k, None)
-
-    stale_webhook = [k for k, ts in _WEBHOOK_EVENT_CACHE.items() if (now_ts - ts) > ttl_seconds]
-    for k in stale_webhook:
-        _WEBHOOK_EVENT_CACHE.pop(k, None)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -74,15 +64,12 @@ async def initialize_payment(body: InitializePaymentRequest, request: Request):
     No JWT — the payment_token is the credential (from the SMS link).
     Uses supabase_admin because there is no user session.
     """
-    now_ts = time.time()
     ttl_seconds = settings.IDEMPOTENCY_TTL_SECONDS
-    _clean_idempotency_cache(now_ts, ttl_seconds)
 
-    # PRIORITY-0: Client can send X-Idempotency-Key. We also derive a deterministic fallback.
+    # Shared store-backed idempotency (works across gunicorn workers in one app instance).
     idem_key = request.headers.get("x-idempotency-key") or f"{body.invoice_id}:{body.payment_token}:{body.email.strip().lower()}"
-    cached = _INIT_IDEMPOTENCY_CACHE.get(idem_key)
-    if cached and (now_ts - cached[0]) <= ttl_seconds:
-        replay = cached[1]
+    replay = get_init_replay(idem_key, ttl_seconds=ttl_seconds)
+    if replay:
         return APIResponse(
             data=InitializePaymentResponse(
                 authorization_url=replay["authorization_url"],
@@ -144,8 +131,8 @@ async def initialize_payment(body: InitializePaymentRequest, request: Request):
         "currency":       inv.get("currency", "NGN"),
     }).execute()
 
-    _INIT_IDEMPOTENCY_CACHE[idem_key] = (
-        now_ts,
+    remember_init_replay(
+        idem_key,
         {
             "authorization_url": data["authorization_url"],
             "access_code": data["access_code"],
@@ -200,12 +187,10 @@ async def paystack_webhook(request: Request):
     if not reference or not invoice_id:
         return {"status": "missing_data"}
 
-    now_ts = time.time()
     ttl_seconds = settings.IDEMPOTENCY_TTL_SECONDS
-    _clean_idempotency_cache(now_ts, ttl_seconds)
 
-    # PRIORITY-0: Idempotent webhook replay protection across retried events.
-    if event_id and event_id in _WEBHOOK_EVENT_CACHE:
+    # Shared store-backed replay protection across gunicorn workers.
+    if event_id and mark_webhook_event_seen(event_id, ttl_seconds=ttl_seconds):
         return {"status": "duplicate_event"}
 
     # Find the pending payment we created during initialize
@@ -223,12 +208,14 @@ async def paystack_webhook(request: Request):
     pay = payment.data
     receipt_number = generate_receipt_number()
 
-    supabase_admin.table("payments").update({
+    updated = supabase_admin.table("payments").update({
         "status":         "success",
         "approval_status": "approved",
         "receipt_number": receipt_number,
         "payment_date":   datetime.now(timezone.utc).isoformat(),
-    }).eq("id", pay["id"]).execute()
+    }).eq("id", pay["id"]).eq("status", "pending").execute()
+    if not updated.data:
+        return {"status": "already_processed"}
     # DB trigger auto-updates invoice status
 
     await log_activity(
@@ -242,8 +229,6 @@ async def paystack_webhook(request: Request):
         student_id=pay["student_id"], amount=pay["amount"],
         receipt_number=receipt_number, payment_method="paystack",
     )
-    if event_id:
-        _WEBHOOK_EVENT_CACHE[event_id] = now_ts
     return {"status": "processed"}
 
 
@@ -640,5 +625,3 @@ async def download_receipt_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
-
-
